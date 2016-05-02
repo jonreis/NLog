@@ -111,6 +111,8 @@ namespace NLog.Targets
 
         private Thread appenderInvalidatorThread = null;
 
+        private ManualResetEvent appenderManualResetEvent;
+
         /// <summary>
         /// The number of initialised files at any one time.
         /// </summary>
@@ -632,12 +634,12 @@ namespace NLog.Targets
             }
         }
 
-        /// <summary>
-        /// Refresh the ArchiveFilePatternToWatch option of the <see cref="FileAppenderCache" />. 
-        /// The log file must be watched for archiving when multiple processes are writing to the same 
-        /// open file.
-        /// </summary>
-        private void RefreshArchiveFilePatternToWatch()
+    /// <summary>
+    /// Refresh the ArchiveFilePatternToWatch option of the <see cref="FileAppenderCache" />. 
+    /// The log file must be watched for archiving when multiple processes are writing to the same 
+    /// open file.
+    /// </summary>
+    private void RefreshArchiveFilePatternToWatch()
         {
 #if !SILVERLIGHT && !__IOS__ && !__ANDROID__
             if (this.fileAppenderCache != null)
@@ -652,63 +654,75 @@ namespace NLog.Targets
                         fileNamePattern = Path.Combine(Path.GetDirectoryName(fileNamePattern), ReplaceFileNamePattern(fileNamePattern, "*"));
                         this.fileAppenderCache.ArchiveFilePatternToWatch = fileNamePattern;
 
-                        if ((EnableArchiveFileCompression) && (this.appenderInvalidatorThread == null))
+                        if (EnableArchiveFileCompression)
                         {
                             // EnableArchiveFileCompression creates a new file for the archive, instead of just moving the log file.
                             // The log file is deleted instead of moved. This process may be holding a lock to that file which will
                             // avoid the file from being deleted. Therefore we must periodically close appenders for files that 
                             // were archived so that the file can be deleted.
+                          lock (SyncRoot)
+                          {
+                            if(this.appenderInvalidatorThread != null)
+                               return;
 
+                            this.appenderManualResetEvent = new ManualResetEvent(false);
                             this.appenderInvalidatorThread = new Thread(new ThreadStart(() =>
                             {
+                              try
+                              {
+                                var tmp = appenderManualResetEvent;
                                 while (true)
                                 {
-                                    try
-                                    {
-                                        Thread.Sleep(200);
-                                    }
-                                    catch (ThreadAbortException ex)
-                                    {
-                                        //ThreadAbortException will be automatically re-thrown at the end of the try/catch/finally if ResetAbort isn't called.
-                                        Thread.ResetAbort();
-                                        InternalLogger.Trace(ex, "ThreadAbortException in Thread.Sleep");
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        InternalLogger.Warn(ex, "Exception in Thread.Sleep, most of the time not an issue.");
-                                    }
-                                   
-                                    lock (SyncRoot)
-                                        this.fileAppenderCache.InvalidateAppendersForInvalidFiles();
+                                  if (tmp.WaitOne(200))
+                                    break;
+
+                                  lock (SyncRoot)
+                                    this.fileAppenderCache.InvalidateAppendersForInvalidFiles();
                                 }
+                              }
+                              catch (Exception ex)
+                              {
+                                InternalLogger.Info("Error in InvalidatorThread loop {0}", ex);
+                              }
                             }));
+
                             this.appenderInvalidatorThread.IsBackground = true;
+                            this.appenderInvalidatorThread.Name = "NLog AppenderInvalidatorThread";
                             this.appenderInvalidatorThread.Start();
+                          }
                         }
                     }
                 }
                 else
                 {
-                    this.fileAppenderCache.ArchiveFilePatternToWatch = null;
-
-                    if (this.appenderInvalidatorThread != null)
-                    {
-                        this.appenderInvalidatorThread.Abort();
-                        this.appenderInvalidatorThread = null;
-                    }
+                  StopAppenderInvalidatorThread();
+                  this.fileAppenderCache.ArchiveFilePatternToWatch = null;
                 }
             }
 #endif
         }
 
-        /// <summary>
+      private void StopAppenderInvalidatorThread()
+      {
+        lock (SyncRoot)
+        {
+          if (this.appenderManualResetEvent == null)
+            return;
+
+          this.appenderManualResetEvent.Set();
+          this.appenderManualResetEvent = null;
+          this.appenderInvalidatorThread = null;
+        }
+      }
+
+      /// <summary>
         /// Removes records of initialized files that have not been 
         /// accessed in the last two days.
         /// </summary>
         /// <remarks>
         /// Files are marked 'initialized' for the purpose of writing footers when the logging finishes.
         /// </remarks>
-        public void CleanupInitializedFiles()
+    public void CleanupInitializedFiles()
         {
             this.CleanupInitializedFiles(DateTime.UtcNow.AddDays(-FileTarget.InitializedFilesCleanupPeriod));
         }
@@ -855,14 +869,9 @@ namespace NLog.Targets
                 this.autoClosingTimer.Dispose();
                 this.autoClosingTimer = null;
             }
-
-            if (this.appenderInvalidatorThread != null)
-            {
-                this.appenderInvalidatorThread.Abort();
-                this.appenderInvalidatorThread = null;
-            }
-
-            this.fileAppenderCache.CloseAppenders();
+  
+          StopAppenderInvalidatorThread();
+          this.fileAppenderCache.CloseAppenders();
         }
 
         /// <summary>
