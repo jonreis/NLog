@@ -84,6 +84,10 @@
     <Reference Include="Owin">
       <HintPath>..\..\src\packages\Owin.1.0\lib\net40\Owin.dll</HintPath>
     </Reference>
+    <Reference Include="Ionic.Zip.Reduced, Version=1.9.1.8, Culture=neutral, PublicKeyToken=edbe51ad942a3f5c, processorArchitecture=MSIL">
+      <HintPath>..\..\src\packages\DotNetZip.Reduced.1.9.1.8\lib\net20\Ionic.Zip.Reduced.dll</HintPath>
+      <Private>True</Private>
+    </Reference>
     <Reference Include="System" />
     <Reference Include="System.Configuration" />
     <Reference Include="System.Core" />
@@ -120,6 +124,7 @@
     <Compile Include="ApiTests.cs" />
     <Compile Include="AssemblyInfo.cs" />
     <Compile Include="AsyncHelperTests.cs" />
+    <Compile Include="Common\CSharpEventTarget.cs" />
     <Compile Include="Common\InternalLoggerTests.cs" />
     <Compile Include="Common\InternalLoggerTests_Trace.cs" />
     <Compile Include="Common\LastLogEventListTarget.cs" />
@@ -199,6 +204,7 @@
     <Compile Include="LayoutRenderers\Wrappers\TrimWhiteSpaceTests.cs" />
     <Compile Include="LayoutRenderers\Wrappers\WhenEmptyTests.cs" />
     <Compile Include="LayoutRenderers\Wrappers\WhenTests.cs" />
+    <Compile Include="LayoutRenderers\Wrappers\WrapLineTests.cs" />
     <Compile Include="LayoutRenderers\Wrappers\XmlEncodeTests.cs" />
     <Compile Include="Layouts\AllEventPropertiesTests.cs" />
     <Compile Include="Layouts\CsvLayoutTests.cs" />

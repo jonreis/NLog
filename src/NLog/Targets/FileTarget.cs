@@ -93,7 +93,7 @@ namespace NLog.Targets
         /// </summary>
         /// <remarks>Last write time is store in local time (no UTC).</remarks>
         private readonly Dictionary<string, DateTime> initializedFiles = new Dictionary<string, DateTime>();
-        
+
         private LineEndingMode lineEndingMode = LineEndingMode.Default;
 
         /// <summary>
@@ -109,7 +109,10 @@ namespace NLog.Targets
 
         private Timer autoClosingTimer;
 
+#if !SILVERLIGHT && !__IOS__ && !__ANDROID__
         private Thread appenderInvalidatorThread = null;
+        private EventWaitHandle stopAppenderInvalidatorThreadWaitHandle = new ManualResetEvent(false);
+#endif
 
         /// <summary>
         /// The number of initialised files at any one time.
@@ -141,9 +144,8 @@ namespace NLog.Targets
 
         private FileArchivePeriod archiveEvery;
         private long archiveAboveSize;
-#if NET4_5
+
         private bool enableArchiveFileCompression;
-#endif
 
         /// <summary>
         /// The filename if <see cref="FileName"/> is a fixed string
@@ -162,7 +164,7 @@ namespace NLog.Targets
 
         private bool concurrentWrites;
         private bool keepFileOpen;
-        
+
         /// <summary>
         /// Initializes a new instance of the <see cref="FileTarget" /> class.
         /// </summary>
@@ -203,6 +205,25 @@ namespace NLog.Targets
             this.CleanupFileName = true;
         }
 
+#if NET4_5
+        static FileTarget()
+        {
+            FileCompressor = new ZipArchiveFileCompressor();
+        }
+#endif
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="FileTarget" /> class.
+        /// </summary>
+        /// <remarks>
+        /// The default value of the layout is: <code>${longdate}|${level:uppercase=true}|${logger}|${message}</code>
+        /// </remarks>
+        /// <param name="name">Name of the target.</param>
+        public FileTarget(string name) : this()
+        {
+            this.Name = name;
+        }
+
         /// <summary>
         /// Gets or sets the name of the file to write to.
         /// </summary>
@@ -224,19 +245,37 @@ namespace NLog.Targets
             get { return fileName; }
             set
             {
-                var simpleLayout = value as SimpleLayout;
-                if (simpleLayout != null && simpleLayout.IsFixedText)
-                {
-                    cachedCleanedFileNamed = CleanupInvalidFileNameChars(simpleLayout.FixedText);
-                }
-                else
-                {
-                    //clear cache
-                    cachedCleanedFileNamed = null;
-                }
 
                 fileName = value;
 
+                if (IsInitialized)
+                {
+                    SetCachedCleanedFileNamed(value);
+
+                    //don't call before initialized because this could lead to stackoverflows.
+                    RefreshFileArchive();
+                    RefreshArchiveFilePatternToWatch();
+                }
+            }
+        }
+
+        private void SetCachedCleanedFileNamed(Layout value)
+        {
+            var simpleLayout = value as SimpleLayout;
+            if (simpleLayout != null && simpleLayout.IsFixedText)
+            {
+                cachedCleanedFileNamed = CleanupInvalidFileNameChars(simpleLayout.FixedText);
+            }
+            else
+            {
+                //clear cache
+                cachedCleanedFileNamed = null;
+            }
+
+            fileName = value;
+
+            if (IsInitialized)
+            {
                 RefreshFileArchive();
                 RefreshArchiveFilePatternToWatch();
             }
@@ -293,7 +332,10 @@ namespace NLog.Targets
             set
             {
                 keepFileOpen = value;
-                RefreshArchiveFilePatternToWatch();
+                if (IsInitialized)
+                {
+                    RefreshArchiveFilePatternToWatch();
+                }
             }
         }
 
@@ -403,7 +445,10 @@ namespace NLog.Targets
             set
             {
                 concurrentWrites = value;
-                RefreshArchiveFilePatternToWatch();
+                if (IsInitialized)
+                {
+                    RefreshArchiveFilePatternToWatch();
+                }
             }
         }
 
@@ -488,7 +533,10 @@ namespace NLog.Targets
             set
             {
                 archiveAboveSize = value;
-                RefreshArchiveFilePatternToWatch();
+                if (IsInitialized)
+                {
+                    RefreshArchiveFilePatternToWatch();
+                }
             }
         }
 
@@ -513,7 +561,10 @@ namespace NLog.Targets
             set
             {
                 archiveEvery = value;
-                RefreshArchiveFilePatternToWatch();
+                if (IsInitialized)
+                {
+                    RefreshArchiveFilePatternToWatch();
+                }
             }
         }
 
@@ -533,8 +584,12 @@ namespace NLog.Targets
             set
             {
                 archiveFileName = value;
-                RefreshFileArchive();
-                RefreshArchiveFilePatternToWatch();
+                if (IsInitialized)
+                {
+                    //don't call before initialized because this could lead to stackoverflows.
+                    RefreshFileArchive();
+                    RefreshArchiveFilePatternToWatch();
+                }
             }
         }
 
@@ -562,7 +617,14 @@ namespace NLog.Targets
         /// <docgen category='Archival Options' order='10' />
         public ArchiveNumberingMode ArchiveNumbering { get; set; }
 
-#if NET4_5
+        /// <summary>
+        /// Used to compress log files during archiving.
+        /// This may be used to provide your own implementation of a zip file compressor,
+        /// on platforms other than .Net4.5.
+        /// Defaults to ZipArchiveFileCompressor on .Net4.5 and to null otherwise.
+        /// </summary>
+        public static IFileCompressor FileCompressor { get; set; }
+
         /// <summary>
         /// Gets or sets a value indicating whether to compress archive files into the zip archive format.
         /// </summary>
@@ -570,19 +632,17 @@ namespace NLog.Targets
         [DefaultValue(false)]
         public bool EnableArchiveFileCompression
         {
-            get { return enableArchiveFileCompression; }
+            get { return enableArchiveFileCompression && FileCompressor != null; }
             set
             {
                 enableArchiveFileCompression = value;
-                RefreshArchiveFilePatternToWatch();
+                if (IsInitialized)
+                {
+                    RefreshArchiveFilePatternToWatch();
+                }
             }
         }
-#else
-        /// <summary>
-        /// Gets or sets a value indicating whether to compress archive files into the zip archive format.
-        /// </summary>
-        private const bool EnableArchiveFileCompression = false;
-#endif
+
 
         /// <summary>
         /// Gets or set a value indicating whether a managed file stream is forced, instead of used the native implementation.
@@ -659,29 +719,26 @@ namespace NLog.Targets
                             // avoid the file from being deleted. Therefore we must periodically close appenders for files that 
                             // were archived so that the file can be deleted.
 
-                            this.appenderInvalidatorThread = new Thread(new ThreadStart(() =>
+                            this.appenderInvalidatorThread = new Thread(() =>
                             {
                                 while (true)
                                 {
                                     try
                                     {
-                                        Thread.Sleep(200);
-                                    }
-                                    catch (ThreadAbortException ex)
-                                    {
-                                        //ThreadAbortException will be automatically re-thrown at the end of the try/catch/finally if ResetAbort isn't called.
-                                        Thread.ResetAbort();
-                                        InternalLogger.Trace(ex, "ThreadAbortException in Thread.Sleep");
+                                        if (this.stopAppenderInvalidatorThreadWaitHandle.WaitOne(200))
+                                            break;
+
+                                        lock (SyncRoot)
+                                        {
+                                            this.fileAppenderCache.InvalidateAppendersForInvalidFiles();
+                                        }
                                     }
                                     catch (Exception ex)
                                     {
-                                        InternalLogger.Warn(ex, "Exception in Thread.Sleep, most of the time not an issue.");
+                                        InternalLogger.Debug(ex, "Exception in FileTarget appender-invalidator thread.");
                                     }
-                                   
-                                    lock (SyncRoot)
-                                        this.fileAppenderCache.InvalidateAppendersForInvalidFiles();
                                 }
-                            }));
+                            });
                             this.appenderInvalidatorThread.IsBackground = true;
                             this.appenderInvalidatorThread.Start();
                         }
@@ -691,12 +748,19 @@ namespace NLog.Targets
                 {
                     this.fileAppenderCache.ArchiveFilePatternToWatch = null;
 
-                    if (this.appenderInvalidatorThread != null)
-                    {
-                        this.appenderInvalidatorThread.Abort();
-                        this.appenderInvalidatorThread = null;
-                    }
+                    this.StopAppenderInvalidatorThread();
                 }
+            }
+#endif
+        }
+
+        private void StopAppenderInvalidatorThread()
+        {
+#if !SILVERLIGHT && !__IOS__ && !__ANDROID__
+            if (this.appenderInvalidatorThread != null)
+            {
+                this.stopAppenderInvalidatorThreadWaitHandle.Set();
+                this.appenderInvalidatorThread = null;
             }
 #endif
         }
@@ -809,7 +873,7 @@ namespace NLog.Targets
             else
                 return SingleProcessFileAppender.TheFactory;
         }
-        
+
         private bool IsArchivingEnabled()
         {
             return this.ArchiveAboveSize != FileTarget.ArchiveAboveSizeDisabled || this.ArchiveEvery != FileArchivePeriod.None;
@@ -822,6 +886,9 @@ namespace NLog.Targets
         protected override void InitializeTarget()
         {
             base.InitializeTarget();
+
+            SetCachedCleanedFileNamed(FileName);
+            RefreshFileArchive();
             this.appenderFactory = GetFileAppenderFactory();
 
             this.fileAppenderCache = new FileAppenderCache(this.OpenFileCacheSize, this.appenderFactory, this);
@@ -856,11 +923,7 @@ namespace NLog.Targets
                 this.autoClosingTimer = null;
             }
 
-            if (this.appenderInvalidatorThread != null)
-            {
-                this.appenderInvalidatorThread.Abort();
-                this.appenderInvalidatorThread = null;
-            }
+            this.StopAppenderInvalidatorThread();
 
             this.fileAppenderCache.CloseAppenders();
         }
@@ -1018,7 +1081,8 @@ namespace NLog.Targets
             try
             {
                 if (currentFileName != null)
-                    ProcessLogEvent(firstLogEvent, currentFileName, ms.ToArray());            }
+                    ProcessLogEvent(firstLogEvent, currentFileName, ms.ToArray());
+            }
             catch (Exception exception)
             {
                 if (exception.MustBeRethrown())
@@ -1187,25 +1251,13 @@ namespace NLog.Targets
             if (!Directory.Exists(archiveFolderPath))
                 Directory.CreateDirectory(archiveFolderPath);
 
-#if NET4_5
             if (EnableArchiveFileCompression)
             {
-                InternalLogger.Info("Archiving {0} to zip-archive {1}", fileName, archiveFileName);
-                using (var archiveStream = new FileStream(archiveFileName, FileMode.Create))
-                using (var archive = new ZipArchive(archiveStream, ZipArchiveMode.Create))
-                using (var originalFileStream = new FileStream(fileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite ))
-                {
-                    var zipArchiveEntry = archive.CreateEntry(Path.GetFileName(fileName));
-                    using (var destination = zipArchiveEntry.Open())
-                    {
-                        originalFileStream.CopyTo(destination);
-                    }
-                }
-                
+                InternalLogger.Info("Archiving {0} to compressed {1}", fileName, archiveFileName);
+                FileCompressor.CompressFile(fileName, archiveFileName);
                 DeleteAndWaitForFileDelete(fileName);
             }
             else
-#endif
             {
                 InternalLogger.Info("Archiving {0} to {1}", fileName, archiveFileName);
                 File.Move(fileName, archiveFileName);
@@ -1299,7 +1351,7 @@ namespace NLog.Targets
             archiveFileNames.Add(archiveFileName);
             EnsureArchiveCount(archiveFileNames);
         }
-        
+
         /// <summary>
         /// Deletes files among a given list, and stops as soon as the remaining files are fewer than the <see
         /// cref="P:FileTarget.MaxArchiveFiles"/> setting.
@@ -1484,7 +1536,7 @@ namespace NLog.Targets
                 {
                     string archiveFileName = Path.GetFileName(nextFile);
                     int lastIndexOfStar = fileNameMask.LastIndexOf('*');
-          
+
                     if (lastIndexOfStar + dateFormat.Length <= archiveFileName.Length)
                     {
                         string datePart = archiveFileName.Substring(lastIndexOfStar, dateFormat.Length);
@@ -1522,7 +1574,7 @@ namespace NLog.Targets
                     case FileArchivePeriod.Year: formatString = "yyyy"; break;
                     case FileArchivePeriod.Month: formatString = "yyyyMM"; break;
                     default: formatString = "yyyyMMdd"; break;
-                    case FileArchivePeriod.Hour: formatString = "yyyyMMddHH";break;
+                    case FileArchivePeriod.Hour: formatString = "yyyyMMddHH"; break;
                     case FileArchivePeriod.Minute: formatString = "yyyyMMddHHmm"; break;
                 }
             }
@@ -1542,7 +1594,7 @@ namespace NLog.Targets
                 InternalLogger.Trace("Using previous log event time (is more recent)");
                 return previousLogEventTimestamp.Value;
             }
-            
+
             if (PreviousLogOverlappedPeriod(fileCharacteristics, logEvent))
             {
                 InternalLogger.Trace("Using previous log event time (previous log overlapped period)");
@@ -1659,7 +1711,7 @@ namespace NLog.Targets
                 return Path.GetFullPath(archiveFileName);
             }
         }
-        
+
         /// <summary>
         /// Determine if old archive files should be deleted.
         /// </summary>
@@ -1723,7 +1775,7 @@ namespace NLog.Targets
             {
                 return false;
             }
-            
+
             // file creation time is in Utc and logEvent's timestamp is originated from TimeSource.Current,
             // so we should ask the TimeSource to convert file time to TimeSource time:
             DateTime creationTime = TimeSource.Current.FromSystemTime(fileCharacteristics.CreationTimeUtc);
@@ -1790,7 +1842,7 @@ namespace NLog.Targets
         {
             if (this.ReplaceFileContentsOnEachWrite)
             {
-                ReplaceFileContent(fileName, bytes);
+                ReplaceFileContent(fileName, bytes, true);
                 return;
             }
 
@@ -1829,7 +1881,7 @@ namespace NLog.Targets
                 if (!this.initializedFiles.ContainsKey(fileName))
                 {
                     ProcessOnStartup(fileName, logEvent);
-                    
+
                     this.initializedFiles[fileName] = now;
                     this.initializedFilesCounter++;
                     writeHeader = true;
@@ -1925,24 +1977,38 @@ namespace NLog.Targets
         /// </summary>
         /// <param name="fileName">The name of the file to be written.</param>
         /// <param name="bytes">Sequence of <see langword="byte"/> to be written in the content section of the file.</param>
+        /// <param name="firstAttempt">First attempt to write?</param>
         /// <remarks>This method is used when the content of the log file is re-written on every write.</remarks>
-        private void ReplaceFileContent(string fileName, byte[] bytes)
+        private void ReplaceFileContent(string fileName, byte[] bytes, bool firstAttempt)
         {
-            using (FileStream fs = File.Create(fileName))
+            try
             {
-                byte[] headerBytes = this.GetHeaderBytes();
-                if (headerBytes != null)
+                using (FileStream fs = File.Create(fileName))
                 {
-                    fs.Write(headerBytes, 0, headerBytes.Length);
+                    byte[] headerBytes = this.GetHeaderBytes();
+                    if (headerBytes != null)
+                    {
+                        fs.Write(headerBytes, 0, headerBytes.Length);
+                    }
+
+                    fs.Write(bytes, 0, bytes.Length);
+
+                    byte[] footerBytes = this.GetFooterBytes();
+                    if (footerBytes != null)
+                    {
+                        fs.Write(footerBytes, 0, footerBytes.Length);
+                    }
                 }
-
-                fs.Write(bytes, 0, bytes.Length);
-
-                byte[] footerBytes = this.GetFooterBytes();
-                if (footerBytes != null)
+            }
+            catch (DirectoryNotFoundException)
+            {
+                if (!this.CreateDirs || !firstAttempt)
                 {
-                    fs.Write(footerBytes, 0, footerBytes.Length);
+                    throw;
                 }
+                Directory.CreateDirectory(Path.GetDirectoryName(fileName));
+                //retry.
+                ReplaceFileContent(fileName, bytes, false);
             }
         }
 
@@ -2066,7 +2132,7 @@ namespace NLog.Targets
         {
             private readonly Queue<string> archiveFileQueue = new Queue<string>();
             private readonly FileTarget fileTarget;
-            
+
             /// <summary>
             /// Creates an instance of <see cref="DynamicFileArchive"/> class.
             /// </summary>
@@ -2077,7 +2143,7 @@ namespace NLog.Targets
                 this.fileTarget = fileTarget;
                 this.MaxArchiveFileToKeep = maxArchivedFiles;
             }
-            
+
             /// <summary>
             /// Gets or sets the maximum number of archive files that should be kept.
             /// </summary>
@@ -2128,7 +2194,7 @@ namespace NLog.Targets
                 AddToArchive(archiveFileName, fileName, createDirectory);
                 return true;
             }
-            
+
             /// <summary>
             /// Archives the file, either by copying it to a new file system location or by compressing it, and add the file name into the list of archives.
             /// </summary>
@@ -2186,7 +2252,7 @@ namespace NLog.Targets
                 }
             }
 
-            
+
             /// <summary>
             /// Gets the file name for the next archive file by appending a number to the provided
             /// "base"-filename.

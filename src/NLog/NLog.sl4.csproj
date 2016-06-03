@@ -290,6 +290,7 @@
     <Compile Include="LayoutRenderers\Wrappers\UrlEncodeLayoutRendererWrapper.cs" />
     <Compile Include="LayoutRenderers\Wrappers\WhenEmptyLayoutRendererWrapper.cs" />
     <Compile Include="LayoutRenderers\Wrappers\WhenLayoutRendererWrapper.cs" />
+    <Compile Include="LayoutRenderers\Wrappers\WrapLineLayoutRendererWrapper.cs" />
     <Compile Include="LayoutRenderers\Wrappers\WrapperLayoutRendererBase.cs" />
     <Compile Include="LayoutRenderers\Wrappers\XmlEncodeLayoutRendererWrapper.cs" />
     <Compile Include="Layouts\CsvColumn.cs" />
@@ -368,6 +369,7 @@
     <Compile Include="Targets\EventLogTargetOverflowAction.cs" />
     <Compile Include="Targets\FileArchivePeriod.cs" />
     <Compile Include="Targets\FileTarget.cs" />
+    <Compile Include="Targets\IFileCompressor.cs" />
     <Compile Include="Targets\LineEndingMode.cs" />
     <Compile Include="Targets\LogReceiverWebServiceTarget.cs" />
     <Compile Include="Targets\MailTarget.cs" />
@@ -412,6 +414,7 @@
     <Compile Include="Targets\Wrappers\SecurityLogOnType.cs" />
     <Compile Include="Targets\Wrappers\SplitGroupTarget.cs" />
     <Compile Include="Targets\Wrappers\WrapperTargetBase.cs" />
+    <Compile Include="Targets\ZipArchiveFileCompressor.cs" />
     <Compile Include="Time\AccurateLocalTimeSource.cs" />
     <Compile Include="Time\AccurateUtcTimeSource.cs" />
     <Compile Include="Time\CachedTimeSource.cs" />
